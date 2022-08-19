@@ -955,12 +955,12 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
         /*
          * Encrypt and authenticate
          */
-
+        unsigned char out_data[128];
         if( ( ret = mbedtls_cipher_auth_encrypt_ext( &transform->cipher_ctx_enc,
                    iv, transform->ivlen,
                    add_data, add_data_len,
                    data, rec->data_len,                     /* src */
-                   data, rec->buf_len - (data - rec->buf),  /* dst */
+                   out_data, rec->buf_len - (data - rec->buf),  /* dst */
                    &rec->data_len,
                    transform->taglen ) ) != 0 )
         {
@@ -972,6 +972,8 @@ int mbedtls_ssl_encrypt_buf( mbedtls_ssl_context *ssl,
                                transform->taglen );
         /* Account for authentication tag. */
         post_avail -= transform->taglen;
+
+        memcpy(data, out_data, rec->data_len);
 
         /*
          * Prefix record content with dynamic IV in case it is explicit.
@@ -1316,11 +1318,12 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
         /*
          * Decrypt and authenticate
          */
+        unsigned char out_data[128];
         if( ( ret = mbedtls_cipher_auth_decrypt_ext( &transform->cipher_ctx_dec,
                   iv, transform->ivlen,
                   add_data, add_data_len,
                   data, rec->data_len + transform->taglen,          /* src */
-                  data, rec->buf_len - (data - rec->buf), &olen,    /* dst */
+                  out_data, rec->buf_len - (data - rec->buf), &olen,    /* dst */
                   transform->taglen ) ) != 0 )
         {
             MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_cipher_auth_decrypt_ext", ret );
@@ -1331,6 +1334,8 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
             return( ret );
         }
         auth_done++;
+
+        memcpy(data, out_data, olen);
 
         /* Double-check that AEAD decryption doesn't change content length. */
         if( olen != rec->data_len )

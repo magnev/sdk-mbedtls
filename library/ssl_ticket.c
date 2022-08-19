@@ -246,12 +246,13 @@ int mbedtls_ssl_ticket_write( void *p_ticket,
     MBEDTLS_PUT_UINT16_BE( clear_len, state_len_bytes, 0 );
 
     /* Encrypt and authenticate */
+    unsigned char out_state[128];
     if( ( ret = mbedtls_cipher_auth_encrypt_ext( &key->ctx,
                     iv, TICKET_IV_BYTES,
                     /* Additional data: key name, IV and length */
                     key_name, TICKET_ADD_DATA_LEN,
                     state, clear_len,
-                    state, end - state, &ciph_len,
+                    out_state, end - state, &ciph_len,
                     TICKET_AUTH_TAG_BYTES ) ) != 0 )
     {
         goto cleanup;
@@ -261,6 +262,9 @@ int mbedtls_ssl_ticket_write( void *p_ticket,
         ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
         goto cleanup;
     }
+
+    /* Copy encrypted data back to the input buffer */
+    memcpy( state, out_state, ciph_len );
 
     *tlen = TICKET_MIN_LEN + ciph_len - TICKET_AUTH_TAG_BYTES;
 
@@ -338,12 +342,13 @@ int mbedtls_ssl_ticket_parse( void *p_ticket,
     }
 
     /* Decrypt and authenticate */
+    unsigned char out_ticket[128];
     if( ( ret = mbedtls_cipher_auth_decrypt_ext( &key->ctx,
                     iv, TICKET_IV_BYTES,
                     /* Additional data: key name, IV and length */
                     key_name, TICKET_ADD_DATA_LEN,
                     ticket, enc_len + TICKET_AUTH_TAG_BYTES,
-                    ticket, enc_len, &clear_len,
+                    out_ticket, enc_len, &clear_len,
                     TICKET_AUTH_TAG_BYTES ) ) != 0 )
     {
         if( ret == MBEDTLS_ERR_CIPHER_AUTH_FAILED )
@@ -356,6 +361,9 @@ int mbedtls_ssl_ticket_parse( void *p_ticket,
         ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
         goto cleanup;
     }
+
+    /* Copy decrypted data back to the input buffer */
+    memcpy( ticket, out_ticket, clear_len );
 
     /* Actually load session */
     if( ( ret = mbedtls_ssl_session_load( session, ticket, clear_len ) ) != 0 )
