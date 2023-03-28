@@ -1425,19 +1425,123 @@ int mbedtls_ssl_decrypt_buf( mbedtls_ssl_context const *ssl,
          * Decrypt and authenticate
          */
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
-        status = psa_aead_decrypt( transform->psa_key_dec,
-                               transform->psa_alg,
-                               iv, transform->ivlen,
-                               add_data, add_data_len,
-                               data, rec->data_len + transform->taglen,
-                               data, rec->buf_len - (data - rec->buf),
-                               &olen );
-
-        if( status != PSA_SUCCESS )
+        if (transform->psa_alg == PSA_ALG_CHACHA20_POLY1305)
         {
-            ret = psa_ssl_status_to_mbedtls( status );
-            MBEDTLS_SSL_DEBUG_RET( 1, "psa_aead_decrypt", ret );
-            return( ret );
+            /*
+            * Workaround for lack of ChaCha/Poly in-place decryption in nrf_cc3xx
+            * Please see NCSDK-20188 for details on removing this workaround.
+            */
+            const size_t max_chunk_size = 128;
+            const size_t poly1305_tag_size = 16;
+            size_t cipher_left = rec->data_len; /* Not counting TAG */
+            size_t plain_length = rec->buf_len - (data - rec->buf);
+            size_t index = 0;
+            size_t current_size;
+            size_t current_out_size;
+            unsigned char temp_buffer[max_chunk_size];
+            psa_aead_operation_t op = PSA_AEAD_OPERATION_INIT;
+
+            status = psa_aead_decrypt_setup( &op,
+                                             transform->psa_key_dec,
+                                             transform->psa_alg );
+            if(status != PSA_SUCCESS)
+            {
+                ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+                MBEDTLS_SSL_DEBUG_RET( 1, "psa_aead_decrypt_setup failed", ret );
+                return ret;
+            }
+
+            /* Set lengths (AAD and plaintext) for decryption */
+            status = psa_aead_set_lengths( &op, add_data_len, plain_length);
+
+            if(status != PSA_SUCCESS)
+            {
+                ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+                MBEDTLS_SSL_DEBUG_RET( 1, "psa_aead_set_lengths failed", ret );
+                return ret;
+            }
+
+            /* Set nonce for decryption */
+            status = psa_aead_set_nonce( &op, iv, transform->ivlen );
+
+            if(status != PSA_SUCCESS)
+            {
+                ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+                MBEDTLS_SSL_DEBUG_RET( 1, "psa_aead_set_nonce failed", ret );
+                return ret;
+            }
+
+            /* Pass the autheticated data in one call */
+            status = psa_aead_update_ad( &op, add_data, add_data_len );
+            if(status != PSA_SUCCESS)
+            {
+                ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+                MBEDTLS_SSL_DEBUG_RET( 1, "psa_aead_update_ad failed", ret );
+                return ret;
+            }
+
+            /* Loop through the ciphertext in chunks up to max-size */
+            while (cipher_left > 0)
+            {
+                current_size = (cipher_left < max_chunk_size) ? cipher_left: max_chunk_size;
+
+                status = psa_aead_update( &op,
+                                          data + index, current_size,
+                                          temp_buffer, current_size,
+                                          &current_out_size );
+
+                if(status != PSA_SUCCESS)
+                {
+                    ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+                    MBEDTLS_SSL_DEBUG_RET( 1, "psa_aead_update failed", ret );
+                    return ret;
+                }
+
+                memcpy(data + index, temp_buffer, current_out_size);
+
+                olen += current_out_size;
+                cipher_left -= current_out_size;
+                index += current_out_size;
+            }
+
+            status = psa_aead_finish( &op,
+                                      NULL,
+                                      0,
+                                      &current_size,
+                                      data + index,
+                                      poly1305_tag_size,
+                                      &current_out_size);
+
+            if (status != PSA_SUCCESS)
+            {
+                ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+                MBEDTLS_SSL_DEBUG_RET( 1, "psa_aead_finish failed", ret );
+                return ret;
+            }
+
+            if (current_out_size != poly1305_tag_size)
+            {
+                ret = MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+                MBEDTLS_SSL_DEBUG_RET( 1, "ChaCha/Poly tag size mismatch", ret );
+                return ret;
+            }
+        }
+        else
+        {
+            status = psa_aead_decrypt( transform->psa_key_dec,
+                                       transform->psa_alg,
+                                       iv, transform->ivlen,
+                                       add_data, add_data_len,
+                                       data, rec->data_len + transform->taglen,
+                                       data, rec->buf_len - (data - rec->buf),
+                                       &olen );
+
+            if( status != PSA_SUCCESS )
+            {
+                ret = psa_ssl_status_to_mbedtls( status );
+                MBEDTLS_SSL_DEBUG_RET( 1, "psa_aead_decrypt", ret );
+                return( ret );
+            }
         }
 #else
         if( ( ret = mbedtls_cipher_auth_decrypt_ext( &transform->cipher_ctx_dec,
